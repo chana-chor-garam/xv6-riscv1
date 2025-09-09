@@ -8,6 +8,20 @@
 
 struct cpu cpus[NCPU];
 
+#ifdef CFS
+static uint weights[] = {
+    88761, 71755, 59560, 49266, 40488, 33177, 27245, 22287, 18274, 15000,
+    12295, 10085, 8285, 6810, 5589, 4589, 3768, 3096, 2540, 2085,
+    1712, 1406, 1156, 950, 780, 640, 526, 432, 355, 292,
+    240, 197, 162, 133, 109, 89, 74, 61, 50, 41,
+    34, 28, 23, 19, 15
+};
+
+static uint64 min_vruntime = 0;
+#endif
+
+extern uint ticks;
+
 struct proc proc[NPROC];
 
 struct proc *initproc;
@@ -19,218 +33,6 @@ extern void forkret(void);
 static void freeproc(struct proc *p);
 
 extern char trampoline[]; // trampoline.S
-
-// CFS Red-Black Tree simulation using simple sorted array
-struct proc* cfs_runqueue[NPROC];
-int cfs_runqueue_size = 0;
-
-// Helper function to calculate weight from nice value
-int
-nice_to_weight(int nice)
-{
-  if (nice == 0) return 1024;
-  if (nice < 0) {
-    // Higher priority: weight increases
-    int weight = 1024;
-    for (int i = 0; i > nice; i--) {
-      weight = (weight * 5) / 4; // Multiply by 1.25
-    }
-    return weight > 88761 ? 88761 : weight;
-  } else {
-    // Lower priority: weight decreases
-    int weight = 1024;
-    for (int i = 0; i < nice; i++) {
-      weight = (weight * 4) / 5; // Divide by 1.25
-    }
-    return weight < 15 ? 15 : weight;
-  }
-}
-
-// Helper function to count runnable processes
-// Insert process into CFS runqueue maintaining vruntime order
-void
-cfs_enqueue(struct proc *p)
-{
-  int i;
-  // Find insertion position (ascending vruntime order)
-  for(i = 0; i < cfs_runqueue_size; i++) {
-    if(p->vruntime < cfs_runqueue[i]->vruntime) {
-      break;
-    }
-  }
-  
-  // Shift elements to make space
-  for(int j = cfs_runqueue_size; j > i; j--) {
-    cfs_runqueue[j] = cfs_runqueue[j-1];
-  }
-  
-  // Insert the process
-  cfs_runqueue[i] = p;
-  cfs_runqueue_size++;
-}
-
-// Remove process from CFS runqueue
-void
-cfs_dequeue(struct proc *p)
-{
-  int i;
-  // Find the process
-  for(i = 0; i < cfs_runqueue_size; i++) {
-    if(cfs_runqueue[i] == p) {
-      break;
-    }
-  }
-  
-  if(i < cfs_runqueue_size) {
-    // Shift elements to fill the gap
-    for(int j = i; j < cfs_runqueue_size - 1; j++) {
-      cfs_runqueue[j] = cfs_runqueue[j + 1];
-    }
-    cfs_runqueue_size--;
-  }
-}
-
-// Get the leftmost (minimum vruntime) process
-struct proc*
-cfs_pick_next()
-{
-  if(cfs_runqueue_size > 0) {
-    return cfs_runqueue[0]; // First element has minimum vruntime
-  }
-  return 0;
-}
-
-// Log all runnable processes and their vruntime values
-void
-cfs_log_processes()
-{
-  struct proc *p;
-  printf("[Scheduler Tick]\n");
-  
-  // Print all runnable processes
-  for(p = proc; p < &proc[NPROC]; p++) {
-    acquire(&p->lock);
-    if(p->state == RUNNABLE) {
-      printf("PID: %d | vRuntime: %ld\n", p->pid, p->vruntime);
-    }
-    release(&p->lock);
-  }
-}
-
-void
-scheduler(void)
-{
-  struct proc *p;
-  struct cpu *c = mycpu();
-  
-  c->proc = 0;
-  for(;;){
-    // Avoid deadlock by ensuring that devices can interrupt.
-    intr_on();
-
-#ifdef SCHEDULER_FCFS
-    // FIRST COME FIRST SERVE SCHEDULER
-    struct proc *earliest = 0;
-    uint64 earliest_time = __UINT64_MAX__;
-    
-    // Find runnable process with earliest creation time
-    for(p = proc; p < &proc[NPROC]; p++) {
-      acquire(&p->lock);
-      if(p->state == RUNNABLE) {
-        if(p->creation_time < earliest_time) {
-          if(earliest) {
-            release(&earliest->lock);
-          }
-          earliest = p;
-          earliest_time = p->creation_time;
-        } else {
-          release(&p->lock);
-        }
-      } else {
-        release(&p->lock);
-      }
-    }
-    
-    if(earliest) {
-      // Switch to chosen process
-      earliest->state = RUNNING;
-      c->proc = earliest;
-      swtch(&c->context, &earliest->context);
-      
-      // Process is done running for now
-      c->proc = 0;
-      release(&earliest->lock);
-    }
-
-    #elif defined(SCHEDULER_CFS)
-    // COMPLETELY FAIR SCHEDULER WITH SORTED RUNQUEUE AND LOGGING
-    
-    // Log all runnable processes before scheduling decision
-    cfs_log_processes();
-    
-    // Rebuild the runqueue with current RUNNABLE processes
-    cfs_runqueue_size = 0;
-    for(p = proc; p < &proc[NPROC]; p++) {
-      acquire(&p->lock);
-      if(p->state == RUNNABLE) {
-        cfs_enqueue(p);
-      }
-      release(&p->lock);
-    }
-    
-    // Pick the process with minimum vruntime (leftmost in tree)
-    struct proc *chosen = cfs_pick_next();
-    
-    if(chosen) {
-      acquire(&chosen->lock);
-      
-      // Double-check it's still runnable
-      if(chosen->state != RUNNABLE) {
-        release(&chosen->lock);
-        continue;
-      }
-      
-      // Log the chosen process
-      printf("--> Scheduling PID %d (lowest vRuntime: %ld)\n", chosen->pid, chosen->vruntime);
-      
-      // Calculate time slice
-      int target_latency = 48;
-      chosen->time_slice = target_latency / (cfs_runqueue_size > 0 ? cfs_runqueue_size : 1);
-      if(chosen->time_slice < 3) {
-        chosen->time_slice = 3; // Minimum time slice
-      }
-      chosen->tick_count = 0;
-      
-      // Switch to chosen process
-      chosen->state = RUNNING;
-      c->proc = chosen;
-      swtch(&c->context, &chosen->context);
-      
-      // Process is done running for now
-      c->proc = 0;
-      release(&chosen->lock);
-    }
-#else
-    // DEFAULT ROUND ROBIN SCHEDULER
-    for(p = proc; p < &proc[NPROC]; p++) {
-      acquire(&p->lock);
-      if(p->state == RUNNABLE) {
-        // Switch to chosen process.  It is the process's job
-        // to release its lock and then reacquire it
-        // before jumping back to us.
-        p->state = RUNNING;
-        c->proc = p;
-        swtch(&c->context, &p->context);
-
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
-        c->proc = 0;
-      }
-      release(&p->lock);
-    }
-#endif
-  }
-}
 
 // helps ensure that wakeups of wait()ing
 // parents are not lost. helps obey the
@@ -358,13 +160,15 @@ found:
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
 
-  // ADD THESE INITIALIZATIONS:
-  p->creation_time = ticks;    // Set creation time
-  p->nice = 0;                 // Default nice value
-  p->vruntime = 0;            // Initialize virtual runtime
-  p->runtime = 0;             // Initialize runtime
-  p->time_slice = 0;          // Will be calculated by scheduler
-  p->tick_count = 0;          // Initialize tick count
+#ifdef FCFS
+  p->ctime = ticks;
+#endif
+
+#ifdef CFS
+  p->nice = DEFAULT_NICE;
+  p->weight = weights[p->nice + 20];
+  p->vruntime = min_vruntime;
+#endif
 
   return p;
 }
@@ -505,7 +309,7 @@ kfork(void)
       np->ofile[i] = filedup(p->ofile[i]);
   np->cwd = idup(p->cwd);
 
-  safestrcpy(np->name, p->name, sizeof(p->name));
+  safestrcpy(np->name, p->name, sizeof(np->name));
 
   pid = np->pid;
 
@@ -638,7 +442,113 @@ kwait(uint64 addr)
 //  - swtch to start running that process.
 //  - eventually that process transfers control
 //    via swtch back to the scheduler.
+void
+scheduler(void)
+{
+  struct proc *p;
+  struct cpu *c = mycpu();
 
+  c->proc = 0;
+  for(;;){
+    // The most recent process to run may have had interrupts
+    // turned off; enable them to avoid a deadlock if all
+    // processes are waiting. Then turn them back off
+    // to avoid a possible race between an interrupt
+    // and wfi.
+    intr_on();
+    intr_off();
+    
+    int found = 0;
+    
+#ifdef FCFS
+    // FCFS scheduler
+    struct proc *earliest_p = 0;
+    for (p = proc; p < &proc[NPROC]; p++) {
+      acquire(&p->lock);
+      if(p->state == RUNNABLE) {
+        if(earliest_p == 0 || p->ctime < earliest_p->ctime) {
+          if (earliest_p) {
+            release(&earliest_p->lock);
+          }
+          earliest_p = p;
+        } else {
+          release(&p->lock);
+        }
+      } else {
+        release(&p->lock);
+      }
+    }
+    
+    if (earliest_p) {
+      p = earliest_p;
+      p->state = RUNNING;
+      c->proc = p;
+      swtch(&c->context, &p->context);
+      c->proc = 0;
+      release(&p->lock);
+      found = 1;
+    }
+#elif defined(CFS)
+    struct proc *next_proc = 0;
+    
+    printf("\n[Scheduler Tick]\n");
+    // Find process with smallest vruntime
+    for (p = proc; p < &proc[NPROC]; p++) {
+      acquire(&p->lock);
+      if (p->state == RUNNABLE) {
+        printf("PID: %d | vRuntime: %d\n", p->pid, p->vruntime);
+        if (next_proc == 0 || p->vruntime < next_proc->vruntime) {
+          if (next_proc) {
+            release(&next_proc->lock);
+          }
+          next_proc = p;
+        } else {
+          release(&p->lock);
+        }
+      } else {
+        release(&p->lock);
+      }
+    }
+
+    if (next_proc) {
+      p = next_proc;
+      printf("--> Scheduling PID %d (lowest vRuntime)\n", p->pid);
+      p->state = RUNNING;
+      c->proc = p;
+      swtch(&c->context, &p->context);
+      
+      c->proc = 0;
+      if (p->state == RUNNING) {
+          p->state = RUNNABLE;
+      }
+      release(&p->lock);
+      found = 1;
+    }
+#else // default round-robin
+    for(p = proc; p < &proc[NPROC]; p++) {
+      acquire(&p->lock);
+      if(p->state == RUNNABLE) {
+        // Switch to chosen process.  It is the process's job
+        // to release its lock and then reacquire it
+        // before jumping back to us.
+        p->state = RUNNING;
+        c->proc = p;
+        swtch(&c->context, &p->context);
+
+        // Process is done running for now.
+        // It should have changed its p->state before coming back.
+        c->proc = 0;
+        found = 1;
+      }
+      release(&p->lock);
+    }
+#endif
+    if(found == 0) {
+      // nothing to run; stop running on this core until an interrupt.
+      asm volatile("wfi");
+    }
+  }
+}
 
 // Switch to scheduler.  Must hold only p->lock
 // and have changed proc->state. Saves and restores
@@ -675,6 +585,11 @@ yield(void)
   acquire(&p->lock);
   p->state = RUNNABLE;
   sched();
+#ifdef CFS
+  if (p->vruntime > min_vruntime) {
+      min_vruntime = p->vruntime;
+  }
+#endif
   release(&p->lock);
 }
 
@@ -706,6 +621,11 @@ forkret(void)
     if (p->trapframe->a0 == -1) {
       panic("exec");
     }
+#ifdef CFS
+    acquire(&p->lock);
+    p->vruntime = min_vruntime;
+    release(&p->lock);
+#endif
   }
 
   // return to user space, mimicing usertrap()'s return.
@@ -851,19 +771,10 @@ procdump(void)
   [RUNNING]   "run   ",
   [ZOMBIE]    "zombie"
   };
-  // int i;
   struct proc *p;
   char *state;
 
   printf("\n");
-#ifdef SCHEDULER_CFS
-  printf("PID\tSTATE\tNAME\t\tNICE\tVRUNTIME\tRUNTIME\tTSLICE\n");
-#elif defined(SCHEDULER_FCFS)
-  printf("PID\tSTATE\tNAME\t\tCREATION_TIME\tRUNTIME\n");
-#else
-  printf("PID\tSTATE\tNAME\n");
-#endif
-
   for(p = proc; p < &proc[NPROC]; p++){
     if(p->state == UNUSED)
       continue;
@@ -871,15 +782,7 @@ procdump(void)
       state = states[p->state];
     else
       state = "???";
-
-#ifdef SCHEDULER_CFS
-    printf("%d\t%s\t%s\t\t%d\t%d\t\t%d\t%d\n", 
-           p->pid, state, p->name, p->nice, p->vruntime, p->runtime, p->time_slice);
-#elif defined(SCHEDULER_FCFS)
-    printf("%d\t%s\t%s\t\t%d\t\t%d\n", 
-           p->pid, state, p->name, p->creation_time, p->runtime);
-#else
     printf("%d %s %s", p->pid, state, p->name);
-#endif
+    printf("\n");
   }
 }
