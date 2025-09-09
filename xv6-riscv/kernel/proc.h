@@ -104,4 +104,12 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  
+  // ADD THESE NEW FIELDS:
+  uint64 creation_time;        // Process creation time (for FCFS)
+  int nice;                    // Nice value (-20 to 19, default 0)
+  uint64 vruntime;            // Virtual runtime (for CFS)
+  uint64 runtime;             // Actual runtime in ticks
+  int time_slice;             // Current time slice
+  int tick_count;             // Ticks used in current slice
 };

@@ -81,8 +81,28 @@ usertrap(void)
     kexit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
-    yield();
+  if(which_dev == 2){
+    #ifdef SCHEDULER_CFS
+      // Update runtime and vruntime for CFS
+      if(myproc() != 0) {
+        struct proc *p = myproc();
+        p->runtime++;
+        p->tick_count++;
+        
+        // Update virtual runtime based on nice value
+        int weight = nice_to_weight(p->nice);
+        p->vruntime += (1024 * 1000) / weight; // Scaled virtual time
+        
+        // Check if time slice is exhausted
+        if(p->tick_count >= p->time_slice) {
+          yield();
+        }
+      }
+    #else
+      // Original timer handling for round-robin and FCFS
+      yield();
+    #endif
+    }
 
   prepare_return();
 

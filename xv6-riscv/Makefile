@@ -1,3 +1,7 @@
+ifdef SCHEDULER
+CFLAGS += -DSCHEDULER_$(SCHEDULER)
+endif
+
 K=kernel
 U=user
 
@@ -143,6 +147,8 @@ UPROGS=\
 	$U/_forphan\
 	$U/_dorphan\
 	$U/_readcount\
+	# $U/_test1\
+  	# $U/_test2\
 
 fs.img: mkfs/mkfs README $(UPROGS)
 	mkfs/mkfs fs.img README $(UPROGS)

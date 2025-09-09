@@ -105,3 +105,21 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+uint64
+sys_nice(void)
+{
+  int nice_val;
+  
+  argint(0, &nice_val);
+    
+  if(nice_val < -20 || nice_val > 19)
+    return -1;
+    
+  struct proc *p = myproc();
+  acquire(&p->lock);
+  p->nice = nice_val;
+  release(&p->lock);
+  
+  return 0;
+}

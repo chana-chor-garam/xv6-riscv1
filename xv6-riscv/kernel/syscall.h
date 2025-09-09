@@ -21,3 +21,4 @@
 #define SYS_mkdir  20
 #define SYS_close  21
 #define SYS_getreadcount 25
+#define SYS_nice   22  // Use the next available number

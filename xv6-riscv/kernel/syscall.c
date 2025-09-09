@@ -8,6 +8,9 @@
 #include "defs.h"
 
 // Fetch the uint64 at addr from the current process.
+extern uint64 sys_nice(void);
+
+
 int
 fetchaddr(uint64 addr, uint64 *ip)
 {
@@ -128,6 +131,7 @@ static uint64 (*syscalls[])(void) = {
 [SYS_mkdir]   sys_mkdir,
 [SYS_close]   sys_close,
 [SYS_getreadcount] sys_getreadcount, // Add this entry
+[SYS_nice]    sys_nice,
 };
 
 void

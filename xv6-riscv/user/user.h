@@ -50,3 +50,5 @@ void free(void*);
 
 //added for getreadcout
 int getreadcount(void);
+
+int nice(int);
