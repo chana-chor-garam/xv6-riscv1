@@ -20,6 +20,10 @@ static void freeproc(struct proc *p);
 
 extern char trampoline[]; // trampoline.S
 
+// CFS Red-Black Tree simulation using simple sorted array
+struct proc* cfs_runqueue[NPROC];
+int cfs_runqueue_size = 0;
+
 // Helper function to calculate weight from nice value
 int
 nice_to_weight(int nice)
@@ -43,20 +47,57 @@ nice_to_weight(int nice)
 }
 
 // Helper function to count runnable processes
-int
-count_runnable()
+// Insert process into CFS runqueue maintaining vruntime order
+void
+cfs_enqueue(struct proc *p)
 {
-  struct proc *p;
-  int count = 0;
-  
-  for(p = proc; p < &proc[NPROC]; p++) {
-    acquire(&p->lock);
-    if(p->state == RUNNABLE) {
-      count++;
+  int i;
+  // Find insertion position (ascending vruntime order)
+  for(i = 0; i < cfs_runqueue_size; i++) {
+    if(p->vruntime < cfs_runqueue[i]->vruntime) {
+      break;
     }
-    release(&p->lock);
   }
-  return count;
+  
+  // Shift elements to make space
+  for(int j = cfs_runqueue_size; j > i; j--) {
+    cfs_runqueue[j] = cfs_runqueue[j-1];
+  }
+  
+  // Insert the process
+  cfs_runqueue[i] = p;
+  cfs_runqueue_size++;
+}
+
+// Remove process from CFS runqueue
+void
+cfs_dequeue(struct proc *p)
+{
+  int i;
+  // Find the process
+  for(i = 0; i < cfs_runqueue_size; i++) {
+    if(cfs_runqueue[i] == p) {
+      break;
+    }
+  }
+  
+  if(i < cfs_runqueue_size) {
+    // Shift elements to fill the gap
+    for(int j = i; j < cfs_runqueue_size - 1; j++) {
+      cfs_runqueue[j] = cfs_runqueue[j + 1];
+    }
+    cfs_runqueue_size--;
+  }
+}
+
+// Get the leftmost (minimum vruntime) process
+struct proc*
+cfs_pick_next()
+{
+  if(cfs_runqueue_size > 0) {
+    return cfs_runqueue[0]; // First element has minimum vruntime
+  }
+  return 0;
 }
 
 void
@@ -104,34 +145,34 @@ scheduler(void)
       release(&earliest->lock);
     }
 
-#elif defined(SCHEDULER_CFS)
-    // COMPLETELY FAIR SCHEDULER
-    struct proc *chosen = 0;
-    uint64 min_vruntime = __UINT64_MAX__;
-    int runnable_count = count_runnable();
+    #elif defined(SCHEDULER_CFS)
+    // COMPLETELY FAIR SCHEDULER WITH SORTED RUNQUEUE
     
-    // Find runnable process with minimum vruntime
+    // Rebuild the runqueue with current RUNNABLE processes
+    cfs_runqueue_size = 0;
     for(p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
       if(p->state == RUNNABLE) {
-        if(p->vruntime < min_vruntime) {
-          if(chosen) {
-            release(&chosen->lock);
-          }
-          chosen = p;
-          min_vruntime = p->vruntime;
-        } else {
-          release(&p->lock);
-        }
-      } else {
-        release(&p->lock);
+        cfs_enqueue(p);
       }
+      release(&p->lock);
     }
     
+    // Pick the process with minimum vruntime (leftmost in tree)
+    struct proc *chosen = cfs_pick_next();
+    
     if(chosen) {
+      acquire(&chosen->lock);
+      
+      // Double-check it's still runnable
+      if(chosen->state != RUNNABLE) {
+        release(&chosen->lock);
+        continue;
+      }
+      
       // Calculate time slice
       int target_latency = 48;
-      chosen->time_slice = target_latency / (runnable_count > 0 ? runnable_count : 1);
+      chosen->time_slice = target_latency / (cfs_runqueue_size > 0 ? cfs_runqueue_size : 1);
       if(chosen->time_slice < 3) {
         chosen->time_slice = 3; // Minimum time slice
       }
