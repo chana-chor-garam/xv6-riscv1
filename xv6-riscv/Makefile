@@ -5,6 +5,9 @@ endif
 K=kernel
 U=user
 
+# Add this line for single CPU testing
+CPUS := 1
+
 OBJS = \
   $K/entry.o \
   $K/start.o \
@@ -147,6 +150,7 @@ UPROGS=\
 	$U/_forphan\
 	$U/_dorphan\
 	$U/_readcount\
+	$U/_schedulertest\
 	# $U/_test1\
   	# $U/_test2\
 

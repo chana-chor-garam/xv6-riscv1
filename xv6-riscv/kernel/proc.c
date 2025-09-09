@@ -100,6 +100,23 @@ cfs_pick_next()
   return 0;
 }
 
+// Log all runnable processes and their vruntime values
+void
+cfs_log_processes()
+{
+  struct proc *p;
+  printf("[Scheduler Tick]\n");
+  
+  // Print all runnable processes
+  for(p = proc; p < &proc[NPROC]; p++) {
+    acquire(&p->lock);
+    if(p->state == RUNNABLE) {
+      printf("PID: %d | vRuntime: %ld\n", p->pid, p->vruntime);
+    }
+    release(&p->lock);
+  }
+}
+
 void
 scheduler(void)
 {
@@ -146,7 +163,10 @@ scheduler(void)
     }
 
     #elif defined(SCHEDULER_CFS)
-    // COMPLETELY FAIR SCHEDULER WITH SORTED RUNQUEUE
+    // COMPLETELY FAIR SCHEDULER WITH SORTED RUNQUEUE AND LOGGING
+    
+    // Log all runnable processes before scheduling decision
+    cfs_log_processes();
     
     // Rebuild the runqueue with current RUNNABLE processes
     cfs_runqueue_size = 0;
@@ -170,6 +190,9 @@ scheduler(void)
         continue;
       }
       
+      // Log the chosen process
+      printf("--> Scheduling PID %d (lowest vRuntime: %ld)\n", chosen->pid, chosen->vruntime);
+      
       // Calculate time slice
       int target_latency = 48;
       chosen->time_slice = target_latency / (cfs_runqueue_size > 0 ? cfs_runqueue_size : 1);
@@ -187,7 +210,6 @@ scheduler(void)
       c->proc = 0;
       release(&chosen->lock);
     }
-
 #else
     // DEFAULT ROUND ROBIN SCHEDULER
     for(p = proc; p < &proc[NPROC]; p++) {
