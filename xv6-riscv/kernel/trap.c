@@ -91,7 +91,7 @@ usertrap(void)
         
         // Update virtual runtime based on nice value
         int weight = nice_to_weight(p->nice);
-        p->vruntime += (1024 * 1000) / weight; // Scaled virtual time
+        p->vruntime += 1024 / weight; // Scaled virtual time
         
         // Check if time slice is exhausted
         if(p->tick_count >= p->time_slice) {
