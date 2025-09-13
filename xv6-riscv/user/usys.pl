@@ -44,3 +44,4 @@ entry("pause");
 entry("uptime");
 entry("getreadcount");
 entry("nice");
+entry("set_scheduler_logging");

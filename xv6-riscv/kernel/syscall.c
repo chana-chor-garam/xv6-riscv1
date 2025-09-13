@@ -105,6 +105,8 @@ extern uint64 sys_link(void);
 extern uint64 sys_mkdir(void);
 extern uint64 sys_close(void);
 extern uint64 sys_getreadcount(void); // Add this declaration
+extern uint64 sys_nice(void);
+extern uint64 sys_set_scheduler_logging(void);
 
 // An array mapping syscall numbers from syscall.h
 // to the function that handles the system call.
@@ -132,6 +134,7 @@ static uint64 (*syscalls[])(void) = {
 [SYS_close]   sys_close,
 [SYS_getreadcount] sys_getreadcount, // Add this entry
 [SYS_nice]    sys_nice,
+[SYS_set_scheduler_logging] sys_set_scheduler_logging, // Add this entry
 };
 
 void

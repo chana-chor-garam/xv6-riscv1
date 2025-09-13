@@ -52,3 +52,4 @@ void free(void*);
 int getreadcount(void);
 
 int nice(int);
+int set_scheduler_logging(int);

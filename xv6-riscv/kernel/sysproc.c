@@ -119,7 +119,30 @@ sys_nice(void)
   struct proc *p = myproc();
   acquire(&p->lock);
   p->nice = nice_val;
+
+  #ifdef CFS
+  p->weight = nice_to_weight(p->nice); // Update weight based on new nice value
+#endif
+
   release(&p->lock);
   
+  return 0;
+}
+
+uint64
+sys_set_scheduler_logging(void)
+{
+  int enabled;
+
+  // Retrieve the argument using argint()
+  argint(0, &enabled);
+
+  // Validate the argument (optional, depending on your requirements)
+  if (enabled != 0 && enabled != 1) {
+    return -1; // Only allow 0 or 1 as valid values
+  }
+
+  // Set the scheduler logging flag
+  scheduler_logging_enabled = enabled;
   return 0;
 }

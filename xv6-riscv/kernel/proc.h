@@ -25,7 +25,7 @@ struct cpu {
   int noff;                   // Depth of push_off() nesting.
   int intena;                 // Were interrupts enabled before push_off()?
 };
-
+int nice_to_weight(int nice);
 extern struct cpu cpus[NCPU];
 
 // per-process data for the trap handling code in trampoline.S.
@@ -79,6 +79,7 @@ struct trapframe {
   /* 280 */ uint64 t6;
 };
 
+extern int scheduler_logging_enabled;
 enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
 // Per-process state
@@ -106,10 +107,14 @@ struct proc {
   char name[16];               // Process name (debugging)
   
   // ADD THESE NEW FIELDS:
-  uint64 creation_time;        // Process creation time (for FCFS)
-  int nice;                    // Nice value (-20 to 19, default 0)
-  uint64 vruntime;            // Virtual runtime (for CFS)
-  uint64 runtime;             // Actual runtime in ticks
-  int time_slice;             // Current time slice
-  int tick_count;             // Ticks used in current slice
+  uint64 ctime;        // Creation time (for FCFS)
+  int nice;         // Process creation time (for FCFS)
+  #ifdef CFS
+                     // Nice value (-20 to 19, default 0)
+     int weight;
+    uint64 vruntime;            // Virtual runtime (for CFS)
+    uint64 runtime;             // Actual runtime in ticks
+    int time_slice;             // Current time slice
+    int tick_count; 
+  #endif            // Ticks used in current slice
 };

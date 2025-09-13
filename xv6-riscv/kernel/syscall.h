@@ -22,3 +22,4 @@
 #define SYS_close  21
 #define SYS_getreadcount 25
 #define SYS_nice   22  // Use the next available number
+#define SYS_set_scheduler_logging 26 // New syscall number for setting scheduler logging

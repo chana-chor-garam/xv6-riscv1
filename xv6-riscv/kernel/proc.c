@@ -6,7 +6,47 @@
 #include "proc.h"
 #include "defs.h"
 
+#define TARGET_LATENCY 48    // Target latency in ticks
+#define MIN_TIME_SLICE 3     // Minimum time slice
+#define NICE_0_WEIGHT 1024   // Weight for nice value 0
+
 struct cpu cpus[NCPU];
+
+int scheduler_logging_enabled=0; // Default: logging disabled
+
+// Calculate weight based on nice value: weight = 1024 / (1.25 ^ nice)
+uint64 calculate_weight(int nice) {
+  if (nice == 0) return NICE_0_WEIGHT;
+
+  // Pre-calculated weights for efficiency (approximation of 1024 / 1.25^nice)
+  static uint64 weights[] = {
+    88761, 71755, 56483, 46273, 36291, 29154, 23283, 18626, 14996, 11916,
+    9548, 7620, 6100, 4904, 3906, 3121, 2501, 1991, 1586, 1277,
+    1024, 820, 655, 526, 423, 335, 272, 215, 172, 137,
+    110, 87, 70, 56, 45, 36, 29, 23, 18, 15
+  };
+
+  int index = nice + 20; // Convert nice range [-20, 19] to [0, 39]
+  if (index < 0) index = 0;
+  if (index >= 40) index = 39;
+
+  return weights[index];
+}
+
+#ifdef CFS
+#define WEIGHT_TO_TIME_SLICE(weight) (48 / (weight)) // Example calculation
+#endif
+
+#ifdef CFS
+uint64
+calculate_time_slice(int runnable_count)
+{
+  if (runnable_count <= 0) {
+    return 48; // Default time slice if no runnable processes
+  }
+  return 48 / runnable_count; // Divide the total time slice among runnable processes
+}
+#endif
 
 #ifdef CFS
 static uint weights[] = {
@@ -18,6 +58,13 @@ static uint weights[] = {
 };
 
 static uint64 min_vruntime = 0;
+
+int
+nice_to_weight(int nice)
+{
+  // Map the nice value (e.g., -20) to the correct array index (e.g., 0).
+  return weights[nice + 20];
+}
 #endif
 
 extern uint ticks;
@@ -165,9 +212,9 @@ found:
 #endif
 
 #ifdef CFS
-  p->nice = DEFAULT_NICE;
-  p->weight = weights[p->nice + 20];
-  p->vruntime = min_vruntime;
+  p->nice = 0; // Default nice value
+  p->weight = calculate_weight(p->nice); // Initialize weight based on nice value
+  p->vruntime = min_vruntime; // Initialize vRuntime to the global minimum
 #endif
 
   return p;
@@ -461,68 +508,106 @@ scheduler(void)
     int found = 0;
     
 #ifdef FCFS
-    // FCFS scheduler
-    struct proc *earliest_p = 0;
-    for (p = proc; p < &proc[NPROC]; p++) {
-      acquire(&p->lock);
-      if(p->state == RUNNABLE) {
-        if(earliest_p == 0 || p->ctime < earliest_p->ctime) {
-          if (earliest_p) {
-            release(&earliest_p->lock);
-          }
-          earliest_p = p;
-        } else {
-          release(&p->lock);
-        }
-      } else {
-        release(&p->lock);
-      }
-    }
-    
-    if (earliest_p) {
-      p = earliest_p;
-      p->state = RUNNING;
-      c->proc = p;
-      swtch(&c->context, &p->context);
-      c->proc = 0;
-      release(&p->lock);
-      found = 1;
-    }
+     // FCFS scheduler
+     struct proc *earliest_p = 0;
+
+     // Find the process with the earliest creation time (p->ctime)
+     for (p = proc; p < &proc[NPROC]; p++) {
+       acquire(&p->lock);
+       if (p->state == RUNNABLE) {
+         if (earliest_p == 0 || p->ctime < earliest_p->ctime) {
+           if (earliest_p) {
+             release(&earliest_p->lock);
+           }
+           earliest_p = p;
+         } else {
+           release(&p->lock);
+         }
+       } else {
+         release(&p->lock);
+       }
+     }
+ 
+     // If a process is found, run it to completion
+     if (earliest_p) {
+       p = earliest_p;
+       p->state = RUNNING;
+       c->proc = p;
+ 
+       // Switch to the selected process
+       swtch(&c->context, &p->context);
+ 
+       // After the process finishes, it will either exit or yield.
+       c->proc = 0;
+ 
+       // Ensure the process is no longer RUNNING before releasing the lock
+       if (p->state == RUNNING) {
+         p->state = RUNNABLE;
+       }
+ 
+       release(&p->lock);
+       found = 1;
+     }
 #elif defined(CFS)
-    struct proc *next_proc = 0;
-    
-    printf("\n[Scheduler Tick]\n");
-    // Find process with smallest vruntime
+#define TARGET_LATENCY 48    // Target latency in ticks
+#define MIN_TIME_SLICE 3     // Minimum time slice
+#define NICE_0_WEIGHT 1024   // Weight for nice value 0
+
+    struct proc *min_vruntime_proc = 0;
+    int runnable_procs = 0;
+    uint64 total_weight = 0;
+
+    // 1. Find the process with the smallest vRuntime
     for (p = proc; p < &proc[NPROC]; p++) {
-      acquire(&p->lock);
       if (p->state == RUNNABLE) {
-        printf("PID: %d | vRuntime: %d\n", p->pid, p->vruntime);
-        if (next_proc == 0 || p->vruntime < next_proc->vruntime) {
-          if (next_proc) {
-            release(&next_proc->lock);
-          }
-          next_proc = p;
-        } else {
-          release(&p->lock);
+        runnable_procs++;
+        total_weight += p->weight;
+        if (min_vruntime_proc == 0 || p->vruntime < min_vruntime_proc->vruntime) {
+          min_vruntime_proc = p;
         }
-      } else {
-        release(&p->lock);
       }
     }
 
-    if (next_proc) {
-      p = next_proc;
-      printf("--> Scheduling PID %d (lowest vRuntime)\n", p->pid);
-      p->state = RUNNING;
-      c->proc = p;
-      swtch(&c->context, &p->context);
-      
-      c->proc = 0;
-      if (p->state == RUNNING) {
-          p->state = RUNNABLE;
+    if (min_vruntime_proc) {
+      p = min_vruntime_proc;
+      acquire(&p->lock);
+
+      if (p->state == RUNNABLE) {
+        // Calculate the time slice based on the process's weight
+        int time_slice = (TARGET_LATENCY * p->weight) / total_weight;
+        if (time_slice < MIN_TIME_SLICE) {
+          time_slice = MIN_TIME_SLICE; // Minimum time slice
+        }
+        p->time_slice = time_slice;
+        p->tick_count = 0;
+
+        // Log the scheduler decision
+        if (scheduler_logging_enabled) {
+          printf("[Scheduler Tick] (Runnable: %d, Time Slice: %d ticks)\n", runnable_procs, time_slice);
+          for (struct proc *q = proc; q < &proc[NPROC]; q++) {
+            if (q->state == RUNNABLE) {
+              printf("PID: %d | Nice: %d | Weight: %d | vRuntime: %lu | TimeSlice: %d\n",
+                     q->pid, q->nice, q->weight, q->vruntime, q->time_slice);
+            }
+          }
+          printf("--> Scheduling PID %d (lowest vRuntime: %lu)\n", p->pid, p->vruntime);
+        }
+
+        // Switch to the chosen process
+        p->state = RUNNING;
+        c->proc = p;
+        swtch(&c->context, &p->context);
+
+        // Process has yielded
+        c->proc = 0;
       }
+
       release(&p->lock);
-      found = 1;
+    }
+
+    // Update the global minimum vRuntime
+    if (min_vruntime_proc) {
+      min_vruntime = min_vruntime_proc->vruntime;
     }
 #else // default round-robin
     for(p = proc; p < &proc[NPROC]; p++) {
@@ -584,12 +669,15 @@ yield(void)
   struct proc *p = myproc();
   acquire(&p->lock);
   p->state = RUNNABLE;
-  sched();
+
 #ifdef CFS
-  if (p->vruntime > min_vruntime) {
-      min_vruntime = p->vruntime;
-  }
+  // Update the process's vRuntime based on its weight
+  uint64 delta_exec = p->tick_count * (NICE_0_WEIGHT / p->weight); // Normalize by weight
+  p->vruntime += delta_exec;
+  p->tick_count = 0; // Reset tick count
 #endif
+
+  sched();
   release(&p->lock);
 }
 
@@ -757,24 +845,29 @@ either_copyin(void *dst, int user_src, uint64 src, uint64 len)
   }
 }
 
-// Print a process listing to console.  For debugging.
+// Print a process listing to console. For debugging CFS.
 // Runs when user types ^P on console.
-// No lock to avoid wedging a stuck machine further.
 void
 procdump(void)
 {
   static char *states[] = {
-  [UNUSED]    "unused",
-  [USED]      "used",
-  [SLEEPING]  "sleep ",
-  [RUNNABLE]  "runble",
-  [RUNNING]   "run   ",
-  [ZOMBIE]    "zombie"
+  [UNUSED]    "unused  ",
+  [SLEEPING]  "sleeping",
+  [RUNNABLE]  "runnable",
+  [RUNNING]   "running ",
+  [ZOMBIE]    "zombie  "
   };
   struct proc *p;
   char *state;
 
-  printf("\n");
+#ifdef CFS
+  // Print the detailed header for the CFS scheduler.
+  printf("\nPID\tSTATE   \tNICE\tWEIGHT\tVRUNTIME\tSLICE\t\tNAME\n");
+  printf("--------------------------------------------------------------------------\n");
+#else
+  printf("\n"); // For non-CFS schedulers, just print a newline.
+#endif
+  
   for(p = proc; p < &proc[NPROC]; p++){
     if(p->state == UNUSED)
       continue;
@@ -782,7 +875,21 @@ procdump(void)
       state = states[p->state];
     else
       state = "???";
-    printf("%d %s %s", p->pid, state, p->name);
-    printf("\n");
+
+#ifdef CFS
+    // This is the correct, detailed printf for the CFS scheduler.
+    printf("%d\t%s\t%d\t%d\t%lu\t\t%d/%d\t\t%s\n", 
+           p->pid, 
+           state, 
+           p->nice, 
+           nice_to_weight(p->nice),
+           p->vruntime, 
+           p->tick_count, 
+           p->time_slice, 
+           p->name);
+#else
+    // This is the original, basic printf for other schedulers.
+    printf("%d %s %s\n", p->pid, state, p->name);
+#endif
   }
 }

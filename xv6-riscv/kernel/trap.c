@@ -82,21 +82,37 @@ usertrap(void)
 
   // give up the CPU if this is a timer interrupt.
   if(which_dev == 2){
-    #ifdef SCHEDULER_CFS
-      // Update runtime and vruntime for CFS
-      if(myproc() != 0) {
-        struct proc *p = myproc();
-        p->runtime++;
-        p->tick_count++;
+    // #ifdef SCHEDULER_CFS
+    //   // Update runtime and vruntime for CFS
+    //   if(myproc() != 0) {
+    //     struct proc *p = myproc();
+    //     p->runtime++;
+    //     p->tick_count++;
         
-        // Update virtual runtime based on nice value
-        int weight = nice_to_weight(p->nice);
-        p->vruntime += 1024 / weight; // Scaled virtual time
+    //     // Update virtual runtime based on nice value
+    //     int weight = nice_to_weight(p->nice);
+    //     p->vruntime += 1024 / weight; // Scaled virtual time
         
-        // Check if time slice is exhausted
-        if(p->tick_count >= p->time_slice) {
-          yield();
-        }
+    //     // Check if time slice is exhausted
+    //     if(p->tick_count >= p->time_slice) {
+    //       yield();
+    //     }
+    //   }
+    // #else
+    #ifdef CFS
+      // Update runtime stats for the CFS scheduler
+      p->runtime++;
+      p->tick_count++;
+      
+      // Update virtual runtime based on its weight
+      int weight = nice_to_weight(p->nice);
+      if(weight > 0) {
+        p->vruntime += 1024 / weight;
+      }
+      
+      // Check if the process's time slice has been used up
+      if(p->tick_count >= p->time_slice) {
+        yield();
       }
     #else
       // Original timer handling for round-robin and FCFS
@@ -172,8 +188,33 @@ kerneltrap()
   }
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2 && myproc() != 0)
-    yield();
+  if(which_dev == 2 && myproc() != 0){
+    #ifdef CFS
+      // A timer interrupt occurred in kernel mode.
+      // Check if a user process was running.
+      if(myproc() != 0 && myproc()->state == RUNNING) {
+        struct proc *p = myproc();
+        
+        // Update runtime stats for the CFS scheduler
+        p->runtime++;
+        p->tick_count++;
+        
+        // Update virtual runtime based on its weight
+        int weight = nice_to_weight(p->nice);
+        if(weight > 0) {
+          p->vruntime += 1024 / weight;
+        }
+        
+        // Check if the process's time slice has been used up
+        if(p->tick_count >= p->time_slice) {
+          yield();
+        }
+      }
+    #else
+      yield();
+    #endif
+  }
+    
 
   // the yield() may have caused some traps to occur,
   // so restore trap registers for use by kernelvec.S's sepc instruction.
